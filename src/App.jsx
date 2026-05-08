@@ -2,15 +2,16 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   ArrowRight,
-  CheckCircle2,
   Cloud,
   LogOut,
+  Play,
   Plus,
   RefreshCw,
   ShieldCheck,
   Sparkles,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 import {
   Line,
@@ -21,15 +22,19 @@ import {
   YAxis,
 } from 'recharts';
 import {
+  ASSESSMENT_LIBRARY,
   BIOMARKER_FIELDS,
   CARE_TRACKS,
   DOMAIN_LABELS,
   PROTOCOL_LIBRARY,
   SEX_OPTIONS,
-  analyzeRecodeSignals,
+  buildSessionSummary,
   buildTrendSeries,
   getProtocolById,
+  percentileDescriptor,
+  scoreAssessment,
 } from './clinicalModel';
+import { assessmentRenderer } from './assessments';
 import { Button, Card, EmptyState, MetricCard, Pill, SectionHeading } from './components';
 import DatabaseService from './services/database';
 
@@ -46,14 +51,6 @@ const blankPatient = {
   isDeidentified: true,
 };
 
-const blankScores = {
-  orientationLanguage: 55,
-  processingSpeed: 55,
-  executiveControl: 55,
-  workingMemory: 55,
-  memory: 55,
-};
-
 const blankBiomarkers = {
   fastingInsulin: '',
   fastingGlucose: '',
@@ -61,12 +58,6 @@ const blankBiomarkers = {
   hsCRP: '',
   homocysteine: '',
   vitaminD: '',
-};
-
-const averageScore = (values) => {
-  const valid = values.filter((value) => Number.isFinite(value));
-  if (!valid.length) return null;
-  return Math.round(valid.reduce((sum, value) => sum + value, 0) / valid.length);
 };
 
 const parseNumericFields = (values) =>
@@ -289,80 +280,188 @@ const PatientForm = ({ onCreate }) => {
   );
 };
 
-const SessionRecorder = ({ latestBiomarkerPanel, onSave, patient }) => {
+const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => {
   const [protocolId, setProtocolId] = useState(patient?.preferredProtocolId ?? PROTOCOL_LIBRARY[0].id);
-  const [scores, setScores] = useState(blankScores);
+  const [phase, setPhase] = useState('idle');
+  const [session, setSession] = useState(null);
+  const [assessmentIndex, setAssessmentIndex] = useState(0);
+  const [results, setResults] = useState({});
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    setProtocolId(patient?.preferredProtocolId ?? PROTOCOL_LIBRARY[0].id);
-  }, [patient]);
+    if (phase === 'idle') {
+      setProtocolId(patient?.preferredProtocolId ?? PROTOCOL_LIBRARY[0].id);
+    }
+  }, [patient, phase]);
 
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const protocol = getProtocolById(protocolId);
+  const assessmentIds = protocol.assessments;
+  const currentAssessmentId = assessmentIds[assessmentIndex];
+  const Renderer = currentAssessmentId ? assessmentRenderer[currentAssessmentId] : null;
+
+  const startSession = async () => {
+    setError('');
     setBusy(true);
-    const domainScores = Object.fromEntries(
-      domainKeys.map((key) => [key, Math.max(1, Math.min(99, Number(scores[key])))]),
-    );
-    const overall = averageScore(Object.values(domainScores));
-    const recodeSignals = analyzeRecodeSignals(domainScores, latestBiomarkerPanel);
-    await onSave({
-      protocolId,
-      completion: {
-        domainScores,
-        summary: {
-          overall,
-          domainScores,
-          recodeSignals,
-          narrative: `${patient.patientCode} completed the ${getProtocolById(protocolId).name} battery with an overall domain composite of ${overall}.`,
-        },
-        recommendations: recodeSignals.map((signal) => signal.recommendation),
-      },
-    });
-    setBusy(false);
+    try {
+      const created = await DatabaseService.createSession(patient, protocolId);
+      setSession(created);
+      setResults({});
+      setAssessmentIndex(0);
+      setPhase('running');
+    } catch (caught) {
+      setError(caught.message);
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const cancelSession = () => {
+    setSession(null);
+    setResults({});
+    setAssessmentIndex(0);
+    setPhase('idle');
+    setError('');
+  };
+
+  const finalizeSession = async (finalResults) => {
+    if (!session) return;
+    const summary = buildSessionSummary(
+      patient,
+      { ...session, assessmentResults: finalResults, protocolId },
+      latestBiomarkerPanel,
+    );
+    try {
+      await DatabaseService.completeSession(session.id, {
+        domainScores: summary.domainScores,
+        summary,
+        recommendations: summary.recodeSignals.map((signal) => signal.recommendation),
+      });
+      setPhase('complete');
+      onSessionComplete?.();
+    } catch (caught) {
+      setError(caught.message);
+    }
+  };
+
+  const handleAssessmentComplete = async (raw) => {
+    if (!session || !currentAssessmentId) return;
+    const scored = scoreAssessment(currentAssessmentId, raw, patient);
+    const nextResults = { ...results, [currentAssessmentId]: scored };
+    setResults(nextResults);
+    try {
+      await DatabaseService.saveAssessmentResult(session.id, currentAssessmentId, scored);
+    } catch (caught) {
+      setError(caught.message);
+    }
+    if (assessmentIndex < assessmentIds.length - 1) {
+      setAssessmentIndex((current) => current + 1);
+    } else {
+      finalizeSession(nextResults);
+    }
+  };
+
+  if (phase === 'running' && Renderer) {
+    return (
+      <Card className="p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">
+              {protocol.name}
+            </div>
+            <div className="mt-1 text-sm text-slate-600">
+              Test {assessmentIndex + 1} of {assessmentIds.length}: {ASSESSMENT_LIBRARY[currentAssessmentId]?.title ?? currentAssessmentId}
+            </div>
+          </div>
+          <button
+            className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 hover:border-slate-300 hover:text-slate-700"
+            onClick={cancelSession}
+            type="button"
+          >
+            <X size={14} /> End session
+          </button>
+        </div>
+        {error ? (
+          <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+            {error}
+          </div>
+        ) : null}
+        <div className="min-h-[460px]">
+          <Renderer onComplete={handleAssessmentComplete} result={results[currentAssessmentId]} />
+        </div>
+      </Card>
+    );
+  }
+
+  if (phase === 'complete') {
+    const completed = Object.entries(results);
+    return (
+      <Card className="p-5">
+        <SectionHeading
+          eyebrow="Session complete"
+          title="Battery saved"
+          body="Per-test percentiles below; full summary appears in the Session Timeline."
+        />
+        <div className="mt-4 grid gap-2">
+          {completed.map(([id, scored]) => (
+            <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2" key={id}>
+              <div className="text-sm font-medium text-slate-800">
+                {ASSESSMENT_LIBRARY[id]?.title ?? id}
+              </div>
+              <div className="text-sm text-slate-600">
+                {scored.percentile != null ? `${scored.percentile} pct · ${percentileDescriptor(scored.percentile)}` : 'Pending'}
+              </div>
+            </div>
+          ))}
+        </div>
+        <Button className="mt-5 w-full" onClick={cancelSession} variant="secondary">
+          Start another session
+        </Button>
+      </Card>
+    );
+  }
 
   return (
     <Card className="p-5">
       <SectionHeading
-        eyebrow="Follow-up"
-        title="Record Session"
-        body="For this emulator pass, enter the final domain percentiles. Full task screens can feed these values next."
+        eyebrow="Begin"
+        title="Run Session"
+        body="Walk the patient through the protocol's interactive battery. Trial-level data is captured per test."
       />
-      <form className="mt-5 space-y-4" onSubmit={handleSubmit}>
+      <div className="mt-5 space-y-4">
         <select
           className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
           onChange={(event) => setProtocolId(event.target.value)}
           value={protocolId}
         >
-          {PROTOCOL_LIBRARY.map((protocol) => (
-            <option key={protocol.id} value={protocol.id}>
-              {protocol.name}
+          {PROTOCOL_LIBRARY.map((library) => (
+            <option key={library.id} value={library.id}>
+              {library.name}
             </option>
           ))}
         </select>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {domainKeys.map((key) => (
-            <label key={key} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
-                {DOMAIN_LABELS[key]}
-              </span>
-              <input
-                className="mt-2 min-h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-400"
-                max="99"
-                min="1"
-                onChange={(event) => setScores((current) => ({ ...current, [key]: event.target.value }))}
-                type="number"
-                value={scores[key]}
-              />
-            </label>
-          ))}
+        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+            {assessmentIds.length} tests
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {assessmentIds.map((id) => (
+              <Pill key={id} tone="neutral">
+                {ASSESSMENT_LIBRARY[id]?.title ?? id}
+              </Pill>
+            ))}
+          </div>
         </div>
-        <Button className="w-full" disabled={busy} type="submit">
-          <CheckCircle2 size={16} />
-          {busy ? 'Saving...' : 'Save completed session'}
+        {error ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
+            {error}
+          </div>
+        ) : null}
+        <Button className="w-full" disabled={busy} onClick={startSession}>
+          <Play size={16} />
+          {busy ? 'Starting...' : 'Begin session'}
         </Button>
-      </form>
+      </div>
     </Card>
   );
 };
@@ -539,12 +638,10 @@ const App = () => {
     }
   };
 
-  const handleSaveSession = async ({ protocolId, completion }) => {
+  const handleSessionComplete = async () => {
     if (!selectedPatient) return;
     setError('');
     try {
-      const sessionRecord = await DatabaseService.createSession(selectedPatient, protocolId);
-      await DatabaseService.completeSession(sessionRecord.id, completion);
       await refreshPatientData(selectedPatient.id);
     } catch (caught) {
       setError(caught.message);
@@ -685,7 +782,7 @@ const App = () => {
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(22rem,0.9fr)]">
                 <TrendCard sessions={sessions} />
                 <div className="space-y-5">
-                  <SessionRecorder latestBiomarkerPanel={latestBiomarkerPanel} onSave={handleSaveSession} patient={selectedPatient} />
+                  <SessionRunner latestBiomarkerPanel={latestBiomarkerPanel} onSessionComplete={handleSessionComplete} patient={selectedPatient} />
                   <BiomarkerPanel latestPanel={latestBiomarkerPanel} onSave={handleSaveBiomarkers} />
                 </div>
               </div>
