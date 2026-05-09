@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   ArrowRight,
@@ -452,6 +452,34 @@ const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => 
       setProtocolId(patient?.preferredProtocolId ?? PROTOCOL_LIBRARY[0].id);
     }
   }, [patient, phase]);
+
+  // Mirror current session/phase into refs so the unmount cleanup below can
+  // see the latest values without re-binding on every state change.
+  const sessionRef = useRef(null);
+  const phaseRef = useRef(phase);
+  useEffect(() => {
+    sessionRef.current = session;
+    phaseRef.current = phase;
+  });
+
+  // If the runner unmounts mid-session — most commonly because the user
+  // switched patients (the parent now keys the runner by patient.id) — the
+  // in_progress DB row would otherwise leak. Best-effort discard on unmount.
+  // We only enter this code path when a session was actually created
+  // (sessionRef.current.id) and the user did not reach the 'complete' phase.
+  // Reaching 'complete' or 'idle' (after cancelSession) means cleanup was
+  // already handled, so we skip.
+  useEffect(() => {
+    return () => {
+      const s = sessionRef.current;
+      const p = phaseRef.current;
+      if (s?.id && p !== 'complete' && p !== 'idle') {
+        DatabaseService.discardSession(s.id).catch(() => {
+          // best-effort: timeline filter hides any orphan that survives
+        });
+      }
+    };
+  }, []);
 
   const protocol = getProtocolById(protocolId);
   const assessmentIds = protocol.assessments;
