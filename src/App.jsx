@@ -42,6 +42,88 @@ import DatabaseService from './services/database';
 const domainKeys = Object.keys(DOMAIN_LABELS);
 const biomarkerKeys = ['fastingInsulin', 'fastingGlucose', 'hbA1c', 'hsCRP', 'homocysteine', 'vitaminD'];
 
+const isSchemaPermissionError = (message) => {
+  if (!message) return false;
+  const lower = String(message).toLowerCase();
+  return (
+    lower.includes('permission denied') ||
+    lower.includes('row-level security') ||
+    lower.includes('row level security') ||
+    lower.includes('rls') ||
+    lower.includes('42501')
+  );
+};
+
+const SCHEMA_HELP_SQL = `grant usage on schema public to anon;
+grant select, insert, update on patients, biomarker_panels, assessment_sessions to anon;
+
+drop policy if exists "demo_patients_select" on patients;
+drop policy if exists "demo_patients_insert" on patients;
+drop policy if exists "demo_patients_update" on patients;
+create policy "demo_patients_select" on patients for select using (true);
+create policy "demo_patients_insert" on patients for insert with check (true);
+create policy "demo_patients_update" on patients for update using (true);
+
+drop policy if exists "demo_biomarker_select" on biomarker_panels;
+drop policy if exists "demo_biomarker_insert" on biomarker_panels;
+drop policy if exists "demo_biomarker_update" on biomarker_panels;
+create policy "demo_biomarker_select" on biomarker_panels for select using (true);
+create policy "demo_biomarker_insert" on biomarker_panels for insert with check (true);
+create policy "demo_biomarker_update" on biomarker_panels for update using (true);
+
+drop policy if exists "demo_sessions_select" on assessment_sessions;
+drop policy if exists "demo_sessions_insert" on assessment_sessions;
+drop policy if exists "demo_sessions_update" on assessment_sessions;
+create policy "demo_sessions_select" on assessment_sessions for select using (true);
+create policy "demo_sessions_insert" on assessment_sessions for insert with check (true);
+create policy "demo_sessions_update" on assessment_sessions for update using (true);`;
+
+const ErrorBanner = ({ error, className = '' }) => {
+  const [copied, setCopied] = useState(false);
+  if (!error) return null;
+  if (!isSchemaPermissionError(error)) {
+    return (
+      <div className={`rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900 ${className}`}>
+        {error}
+      </div>
+    );
+  }
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(SCHEMA_HELP_SQL);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard write may fail in some contexts; fall through silently
+    }
+  };
+  return (
+    <div className={`rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 ${className}`}>
+      <div className="font-semibold">Supabase row-level security is blocking this request.</div>
+      <p className="mt-1 text-amber-800">
+        Your schema's RLS policies require an authenticated owner. For local development or single-user pilots,
+        run the demo-mode SQL below in your Supabase Dashboard → SQL Editor. Don't use demo mode with real
+        patient data — for clinical use, run <code className="font-mono">supabase-clinical-mode.sql</code> instead.
+      </p>
+      <pre className="mt-3 max-h-48 overflow-auto rounded-xl bg-amber-950/90 p-3 font-mono text-[11px] leading-relaxed text-amber-50">
+        {SCHEMA_HELP_SQL}
+      </pre>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          className="rounded-full border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-900 hover:border-amber-400"
+          onClick={copy}
+          type="button"
+        >
+          {copied ? 'Copied' : 'Copy SQL'}
+        </button>
+        <span className="text-xs text-amber-700">
+          Original error: <span className="font-mono">{error}</span>
+        </span>
+      </div>
+    </div>
+  );
+};
+
 const blankPatient = {
   patientCode: '',
   studyId: '',
@@ -451,11 +533,7 @@ const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => 
             <X size={14} /> End session
           </button>
         </div>
-        {error ? (
-          <div className="mb-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
-            {error}
-          </div>
-        ) : null}
+        <ErrorBanner error={error} className="mb-3" />
         <div className="min-h-[460px]">
           <Renderer onComplete={handleAssessmentComplete} result={results[currentAssessmentId]} />
         </div>
@@ -571,11 +649,7 @@ const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => 
             ))}
           </div>
         </div>
-        {error ? (
-          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700">
-            {error}
-          </div>
-        ) : null}
+        <ErrorBanner error={error} />
         <Button className="w-full" disabled={busy} onClick={startSession}>
           <Play size={16} />
           {busy ? 'Starting...' : 'Begin session'}
@@ -887,11 +961,7 @@ const App = () => {
         </aside>
 
         <section className="space-y-5">
-          {error ? (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
-              {error}
-            </div>
-          ) : null}
+          <ErrorBanner error={error} />
 
           <div className="grid gap-4 md:grid-cols-3">
             <MetricCard icon={<Users size={20} />} label="Patients" sublabel="Visible to signed-in user" value={loading ? '...' : patients.length} />
