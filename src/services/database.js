@@ -351,6 +351,17 @@ export const DatabaseService = {
     return nextSession;
   },
 
+  async discardSession(sessionId) {
+    if (!sessionId) return;
+    if (this.isRemote()) {
+      const { error } = await supabase.from('assessment_sessions').delete().eq('id', sessionId);
+      if (error) throw error;
+      return;
+    }
+    const sessions = listLocal(LOCAL_KEYS.sessions).filter((entry) => entry.id !== sessionId);
+    writeLocalList(LOCAL_KEYS.sessions, sessions);
+  },
+
   async completeSession(sessionId, completion) {
     const session = await this.getSession(sessionId);
     if (!session) return null;
@@ -439,7 +450,10 @@ export const DatabaseService = {
 
   async exportPatientCsv(patientId) {
     const patient = await this.getPatient(patientId);
-    const sessions = await this.listPatientSessions(patientId);
+    const allSessions = await this.listPatientSessions(patientId);
+    // Only export completed sessions. In-progress / aborted rows would
+    // emit blank summary fields and confuse downstream tools.
+    const sessions = allSessions.filter((session) => session.status === 'completed');
     const rows = sessions.map((session) => {
       const r = session.assessmentResults ?? {};
       const trailATime = r.trailA?.completionTimeMs;

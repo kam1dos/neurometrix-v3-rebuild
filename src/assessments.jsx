@@ -113,7 +113,7 @@ export const OrientationAssessment = ({ result, onComplete }) => {
   );
 };
 
-export const SymbolMatchAssessment = ({ result, onComplete }) => {
+export const SymbolMatchAssessment = ({ result: _result, onComplete }) => {
   const [phase, setPhase] = useState('instruction');
   const [timeLeft, setTimeLeft] = useState(90);
   const [currentSymbol, setCurrentSymbol] = useState(null);

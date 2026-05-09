@@ -54,29 +54,35 @@ const isSchemaPermissionError = (message) => {
   );
 };
 
-const SCHEMA_HELP_SQL = `grant usage on schema public to anon;
-grant select, insert, update on patients, biomarker_panels, assessment_sessions to anon;
+const SCHEMA_HELP_SQL = `grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on patients, biomarker_panels, assessment_sessions to anon, authenticated;
 
 drop policy if exists "demo_patients_select" on patients;
 drop policy if exists "demo_patients_insert" on patients;
 drop policy if exists "demo_patients_update" on patients;
+drop policy if exists "demo_patients_delete" on patients;
 create policy "demo_patients_select" on patients for select using (true);
 create policy "demo_patients_insert" on patients for insert with check (true);
 create policy "demo_patients_update" on patients for update using (true);
+create policy "demo_patients_delete" on patients for delete using (true);
 
 drop policy if exists "demo_biomarker_select" on biomarker_panels;
 drop policy if exists "demo_biomarker_insert" on biomarker_panels;
 drop policy if exists "demo_biomarker_update" on biomarker_panels;
+drop policy if exists "demo_biomarker_delete" on biomarker_panels;
 create policy "demo_biomarker_select" on biomarker_panels for select using (true);
 create policy "demo_biomarker_insert" on biomarker_panels for insert with check (true);
 create policy "demo_biomarker_update" on biomarker_panels for update using (true);
+create policy "demo_biomarker_delete" on biomarker_panels for delete using (true);
 
 drop policy if exists "demo_sessions_select" on assessment_sessions;
 drop policy if exists "demo_sessions_insert" on assessment_sessions;
 drop policy if exists "demo_sessions_update" on assessment_sessions;
+drop policy if exists "demo_sessions_delete" on assessment_sessions;
 create policy "demo_sessions_select" on assessment_sessions for select using (true);
 create policy "demo_sessions_insert" on assessment_sessions for insert with check (true);
-create policy "demo_sessions_update" on assessment_sessions for update using (true);`;
+create policy "demo_sessions_update" on assessment_sessions for update using (true);
+create policy "demo_sessions_delete" on assessment_sessions for delete using (true);`;
 
 const ErrorBanner = ({ error, className = '' }) => {
   const [copied, setCopied] = useState(false);
@@ -468,7 +474,19 @@ const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => 
     }
   };
 
-  const cancelSession = () => {
+  const cancelSession = async () => {
+    // If we created a DB row but the session never completed, clean it up so
+    // it doesn't accumulate as in_progress noise. Best-effort: if the delete
+    // fails (e.g. RLS lacks a delete policy), the session timeline filter
+    // will still hide it.
+    if (session?.id && phase !== 'complete') {
+      try {
+        await DatabaseService.discardSession(session.id);
+        onSessionComplete?.();
+      } catch {
+        // ignore — UI filter will hide the orphan
+      }
+    }
     setSession(null);
     setResults({});
     setAssessmentIndex(0);
@@ -499,17 +517,21 @@ const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => 
   const handleAssessmentComplete = async (raw) => {
     if (!session || !currentAssessmentId) return;
     const scored = scoreAssessment(currentAssessmentId, raw, patient);
-    const nextResults = { ...results, [currentAssessmentId]: scored };
-    setResults(nextResults);
+    // Persist FIRST. If the write fails, do not advance or finalize — the
+    // UI's in-memory results would diverge from what's actually saved, and
+    // a finalize in that state would summarize a result the DB never saw.
     try {
       await DatabaseService.saveAssessmentResult(session.id, currentAssessmentId, scored);
     } catch (caught) {
-      setError(caught.message);
+      setError(`${caught.message} — could not save ${currentAssessmentId}. End session and retry.`);
+      return;
     }
+    const nextResults = { ...results, [currentAssessmentId]: scored };
+    setResults(nextResults);
     if (assessmentIndex < assessmentIds.length - 1) {
       setAssessmentIndex((current) => current + 1);
     } else {
-      finalizeSession(nextResults);
+      await finalizeSession(nextResults);
     }
   };
 
@@ -965,7 +987,7 @@ const App = () => {
 
           <div className="grid gap-4 md:grid-cols-3">
             <MetricCard icon={<Users size={20} />} label="Patients" sublabel="Visible to signed-in user" value={loading ? '...' : patients.length} />
-            <MetricCard icon={<Activity size={20} />} label="Sessions" sublabel="For selected patient" tone="accent" value={sessions.length} />
+            <MetricCard icon={<Activity size={20} />} label="Sessions" sublabel="Completed for selected patient" tone="accent" value={completedSessions.length} />
             <MetricCard icon={<Sparkles size={20} />} label="Latest overall" sublabel="Completed domain composite" tone="warning" value={latestSession?.summary?.overall ?? 'Pending'} />
           </div>
 
@@ -1001,7 +1023,7 @@ const App = () => {
               <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(22rem,0.9fr)]">
                 <TrendCard sessions={sessions} />
                 <div className="space-y-5">
-                  <SessionRunner latestBiomarkerPanel={latestBiomarkerPanel} onSessionComplete={handleSessionComplete} patient={selectedPatient} />
+                  <SessionRunner key={selectedPatient.id} latestBiomarkerPanel={latestBiomarkerPanel} onSessionComplete={handleSessionComplete} patient={selectedPatient} />
                   <BiomarkerPanel latestPanel={latestBiomarkerPanel} onSave={handleSaveBiomarkers} />
                 </div>
               </div>
@@ -1010,10 +1032,10 @@ const App = () => {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <SectionHeading eyebrow="History" title="Session Timeline" />
                   <div className="flex items-center gap-2">
-                    <Pill tone="neutral">{sessions.length} total</Pill>
+                    <Pill tone="neutral">{completedSessions.length} completed</Pill>
                     <button
                       className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900 disabled:opacity-50"
-                      disabled={!sessions.length}
+                      disabled={!completedSessions.length}
                       onClick={handleExportCsv}
                       type="button"
                     >
@@ -1029,7 +1051,7 @@ const App = () => {
                     <div>Pattern summary</div>
                     <div>Overall</div>
                   </div>
-                  {sessions.map((entry) => (
+                  {completedSessions.map((entry) => (
                     <div className="grid grid-cols-[0.75fr_0.8fr_1fr_0.7fr] border-t border-slate-200 px-4 py-3 text-sm" key={entry.id}>
                       <div className="font-medium text-slate-900">{formatDate(entry.startedAt)}</div>
                       <div className="text-slate-600">{getProtocolById(entry.protocolId).name}</div>
@@ -1037,9 +1059,9 @@ const App = () => {
                       <div className="font-semibold text-slate-900">{entry.summary?.overall ?? 'Pending'}</div>
                     </div>
                   ))}
-                  {!sessions.length ? (
+                  {!completedSessions.length ? (
                     <div className="border-t border-slate-200 px-4 py-6 text-sm text-slate-500">
-                      No sessions recorded for this patient yet.
+                      No completed sessions for this patient yet.
                     </div>
                   ) : null}
                 </div>

@@ -70,29 +70,37 @@ alter table assessment_sessions enable row level security;
 drop policy if exists "patients_select_own" on patients;
 drop policy if exists "patients_insert_own" on patients;
 drop policy if exists "patients_update_own" on patients;
+drop policy if exists "patients_delete_own" on patients;
 create policy "patients_select_own" on patients for select using (owner_id = auth.uid());
 create policy "patients_insert_own" on patients for insert with check (owner_id = auth.uid());
 create policy "patients_update_own" on patients for update using (owner_id = auth.uid());
+create policy "patients_delete_own" on patients for delete using (owner_id = auth.uid());
 
 drop policy if exists "biomarkers_select_own" on biomarker_panels;
 drop policy if exists "biomarkers_insert_own" on biomarker_panels;
 drop policy if exists "biomarkers_update_own" on biomarker_panels;
+drop policy if exists "biomarkers_delete_own" on biomarker_panels;
 create policy "biomarkers_select_own" on biomarker_panels
   for select using (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
 create policy "biomarkers_insert_own" on biomarker_panels
   for insert with check (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
 create policy "biomarkers_update_own" on biomarker_panels
   for update using (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
+create policy "biomarkers_delete_own" on biomarker_panels
+  for delete using (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
 
 drop policy if exists "sessions_select_own" on assessment_sessions;
 drop policy if exists "sessions_insert_own" on assessment_sessions;
 drop policy if exists "sessions_update_own" on assessment_sessions;
+drop policy if exists "sessions_delete_own" on assessment_sessions;
 create policy "sessions_select_own" on assessment_sessions
   for select using (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
 create policy "sessions_insert_own" on assessment_sessions
   for insert with check (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
 create policy "sessions_update_own" on assessment_sessions
   for update using (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
+create policy "sessions_delete_own" on assessment_sessions
+  for delete using (owner_id = auth.uid() and patient_id in (select id from patients where owner_id = auth.uid()));
 
 create or replace function touch_updated_at()
 returns trigger as $$
@@ -135,21 +143,12 @@ from assessment_sessions s
 join patients p on p.id = s.patient_id;
 
 grant usage on schema public to authenticated;
-grant select, insert, update on patients to authenticated;
-grant select, insert, update on biomarker_panels to authenticated;
-grant select, insert, update on assessment_sessions to authenticated;
+grant select, insert, update, delete on patients to authenticated;
+grant select, insert, update, delete on biomarker_panels to authenticated;
+grant select, insert, update, delete on assessment_sessions to authenticated;
 grant select on session_overview to authenticated;
 
--- Demo-only anonymous policies can be enabled below if you explicitly want
--- unauthenticated browser access for a local showcase. Leave disabled for
--- any clinical or shared deployment.
---
--- create policy "demo_patients_select" on patients for select using (true);
--- create policy "demo_patients_insert" on patients for insert with check (true);
--- create policy "demo_patients_update" on patients for update using (true);
--- create policy "demo_biomarker_select" on biomarker_panels for select using (true);
--- create policy "demo_biomarker_insert" on biomarker_panels for insert with check (true);
--- create policy "demo_biomarker_update" on biomarker_panels for update using (true);
--- create policy "demo_sessions_select" on assessment_sessions for select using (true);
--- create policy "demo_sessions_insert" on assessment_sessions for insert with check (true);
--- create policy "demo_sessions_update" on assessment_sessions for update using (true);
+-- For demo / single-user pilot mode, run supabase-demo-mode.sql
+-- (grants anon + authenticated full access with permissive policies).
+-- For clinical use, this file's per-user policies are the default;
+-- supabase-clinical-mode.sql can re-apply them after running demo mode.
