@@ -3,6 +3,7 @@ import {
   Activity,
   ArrowRight,
   Cloud,
+  Download,
   LogOut,
   Play,
   Plus,
@@ -43,6 +44,10 @@ const biomarkerKeys = ['fastingInsulin', 'fastingGlucose', 'hbA1c', 'hsCRP', 'ho
 
 const blankPatient = {
   patientCode: '',
+  studyId: '',
+  firstName: '',
+  lastName: '',
+  dateOfBirth: '',
   ageAtBaseline: 62,
   educationYears: 16,
   sex: '',
@@ -193,26 +198,91 @@ const PatientForm = ({ onCreate }) => {
   const [busy, setBusy] = useState(false);
 
   const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const isResearch = form.isDeidentified;
+
+  const setMode = (mode) => {
+    const research = mode === 'research';
+    setForm((current) => ({
+      ...current,
+      isDeidentified: research,
+      // Clear identifiers when switching to research; keep them when switching to clinical
+      ...(research ? { firstName: '', lastName: '', dateOfBirth: '' } : {}),
+    }));
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     setBusy(true);
     await onCreate(form);
-    setForm({ ...blankPatient, patientCode: '' });
+    setForm(blankPatient);
     setBusy(false);
   };
 
   return (
     <Card className="p-5">
-      <SectionHeading eyebrow="Registry" title="New Patient" body="Use de-identified patient codes for testing and early pilots." />
-      <form className="mt-5 space-y-3" onSubmit={handleSubmit}>
+      <SectionHeading
+        eyebrow="Registry"
+        title="New Patient"
+        body={isResearch
+          ? 'Research mode: de-identified codes only. No PHI is collected.'
+          : 'Clinical mode: optional name and date of birth alongside the patient code.'}
+      />
+      <div className="mt-4 inline-flex rounded-full border border-slate-200 bg-slate-50 p-1 text-xs font-medium">
+        <button
+          className={`rounded-full px-3 py-1 transition ${!isResearch ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+          onClick={() => setMode('clinical')}
+          type="button"
+        >
+          Clinical
+        </button>
+        <button
+          className={`rounded-full px-3 py-1 transition ${isResearch ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'}`}
+          onClick={() => setMode('research')}
+          type="button"
+        >
+          Research
+        </button>
+      </div>
+      <form className="mt-4 space-y-3" onSubmit={handleSubmit}>
         <input
           className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
           onChange={(event) => update('patientCode', event.target.value)}
-          placeholder="Patient code"
+          placeholder={isResearch ? 'Study code (e.g. P001)' : 'Patient code (e.g. MRN or clinic ID)'}
           required
           value={form.patientCode}
         />
+        {isResearch ? (
+          <input
+            className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
+            onChange={(event) => update('studyId', event.target.value)}
+            placeholder="External study ID (optional)"
+            value={form.studyId}
+          />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
+                onChange={(event) => update('firstName', event.target.value)}
+                placeholder="First name"
+                value={form.firstName}
+              />
+              <input
+                className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
+                onChange={(event) => update('lastName', event.target.value)}
+                placeholder="Last name"
+                value={form.lastName}
+              />
+            </div>
+            <input
+              className="min-h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
+              onChange={(event) => update('dateOfBirth', event.target.value)}
+              placeholder="Date of birth"
+              type="date"
+              value={form.dateOfBirth}
+            />
+          </>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <input
             className="min-h-11 rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-400"
@@ -395,24 +465,73 @@ const SessionRunner = ({ latestBiomarkerPanel, onSessionComplete, patient }) => 
 
   if (phase === 'complete') {
     const completed = Object.entries(results);
+    const detailFor = (id, scored) => {
+      switch (id) {
+        case 'stroop':
+          return scored.interferenceMs != null
+            ? `interference ${scored.interferenceMs}ms · acc ${scored.accuracy}%`
+            : null;
+        case 'symbolMatch':
+          return scored.throughput != null
+            ? `throughput ${scored.throughput} · CV ${scored.cvRt}%`
+            : null;
+        case 'trailA':
+          return scored.completionTimeMs != null
+            ? `${(scored.completionTimeMs / 1000).toFixed(1)}s · ${scored.errors ?? 0} err`
+            : null;
+        case 'trailB': {
+          if (scored.completionTimeMs == null) return null;
+          const aTime = results.trailA?.completionTimeMs;
+          const ba = aTime ? (scored.completionTimeMs / aTime).toFixed(2) : null;
+          return ba
+            ? `${(scored.completionTimeMs / 1000).toFixed(1)}s · B/A ${ba}`
+            : `${(scored.completionTimeMs / 1000).toFixed(1)}s · ${scored.errors ?? 0} err`;
+        }
+        case 'spanForward':
+        case 'spanBackward':
+          return scored.maxSpan != null ? `span ${scored.maxSpan}` : null;
+        case 'verbalLearning': {
+          const parts = [];
+          if (scored.delayedRecall != null) parts.push(`delayed ${scored.delayedRecall}`);
+          if (scored.intrusions) parts.push(`${scored.intrusions} intrusion${scored.intrusions === 1 ? '' : 's'}`);
+          return parts.join(' · ') || null;
+        }
+        case 'fluency':
+          return scored.uniqueResponses != null
+            ? `${scored.uniqueResponses} unique · ${scored.perseverations ?? 0} perseverations`
+            : null;
+        case 'orientation':
+          return scored.score != null ? `${scored.score}/6` : null;
+        default:
+          return null;
+      }
+    };
     return (
       <Card className="p-5">
         <SectionHeading
           eyebrow="Session complete"
           title="Battery saved"
-          body="Per-test percentiles below; full summary appears in the Session Timeline."
+          body="Per-test percentiles and detail below; full summary appears in the Session Timeline."
         />
         <div className="mt-4 grid gap-2">
-          {completed.map(([id, scored]) => (
-            <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2" key={id}>
-              <div className="text-sm font-medium text-slate-800">
-                {ASSESSMENT_LIBRARY[id]?.title ?? id}
+          {completed.map(([id, scored]) => {
+            const detail = detailFor(id, scored);
+            return (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2" key={id}>
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium text-slate-800">
+                    {ASSESSMENT_LIBRARY[id]?.title ?? id}
+                  </div>
+                  <div className="text-sm text-slate-600">
+                    {scored.percentile != null ? `${scored.percentile} pct · ${percentileDescriptor(scored.percentile)}` : 'Pending'}
+                  </div>
+                </div>
+                {detail ? (
+                  <div className="mt-1 text-xs font-mono text-slate-500">{detail}</div>
+                ) : null}
               </div>
-              <div className="text-sm text-slate-600">
-                {scored.percentile != null ? `${scored.percentile} pct · ${percentileDescriptor(scored.percentile)}` : 'Pending'}
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
         <Button className="mt-5 w-full" onClick={cancelSession} variant="secondary">
           Start another session
@@ -659,6 +778,31 @@ const App = () => {
     }
   };
 
+  const handleExportCsv = async () => {
+    if (!selectedPatient) return;
+    setError('');
+    try {
+      const csv = await DatabaseService.exportPatientCsv(selectedPatient.id);
+      if (!csv) {
+        setError('No completed sessions to export yet.');
+        return;
+      }
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      const codeSafe = (selectedPatient.patientCode || 'patient').replace(/[^a-z0-9_-]/gi, '_');
+      link.href = url;
+      link.download = `neurometrix_${codeSafe}_${stamp}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setError(caught.message);
+    }
+  };
+
   const handleSignOut = async () => {
     await DatabaseService.signOut();
     setPatients([]);
@@ -764,6 +908,11 @@ const App = () => {
                       Selected Patient
                     </div>
                     <h2 className="mt-2 text-3xl font-semibold tracking-normal">{selectedPatient.patientCode}</h2>
+                    {!selectedPatient.isDeidentified && (selectedPatient.firstName || selectedPatient.lastName) ? (
+                      <p className="mt-1 text-sm font-medium text-slate-700">
+                        {[selectedPatient.firstName, selectedPatient.lastName].filter(Boolean).join(' ')}
+                      </p>
+                    ) : null}
                     <p className="mt-2 text-sm leading-6 text-slate-600">
                       {selectedPatient.careTrack} · {getProtocolById(selectedPatient.preferredProtocolId).name} ·{' '}
                       {selectedPatient.isDeidentified ? 'De-identified' : 'Identified'}
@@ -790,7 +939,18 @@ const App = () => {
               <Card className="p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <SectionHeading eyebrow="History" title="Session Timeline" />
-                  <Pill tone="neutral">{sessions.length} total</Pill>
+                  <div className="flex items-center gap-2">
+                    <Pill tone="neutral">{sessions.length} total</Pill>
+                    <button
+                      className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900 disabled:opacity-50"
+                      disabled={!sessions.length}
+                      onClick={handleExportCsv}
+                      type="button"
+                    >
+                      <Download size={14} />
+                      Export CSV
+                    </button>
+                  </div>
                 </div>
                 <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200">
                   <div className="grid grid-cols-[0.75fr_0.8fr_1fr_0.7fr] bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">

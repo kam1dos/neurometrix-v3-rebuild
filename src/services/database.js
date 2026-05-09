@@ -440,19 +440,69 @@ export const DatabaseService = {
   async exportPatientCsv(patientId) {
     const patient = await this.getPatient(patientId);
     const sessions = await this.listPatientSessions(patientId);
-    const rows = sessions.map((session) => ({
-      patient_code: patient.patientCode,
-      session_number: session.sessionNumber,
-      protocol_id: session.protocolId,
-      started_at: session.startedAt,
-      completed_at: session.completedAt,
-      overall: session.summary?.overall ?? '',
-      orientation_language: session.domainScores?.orientationLanguage ?? '',
-      processing_speed: session.domainScores?.processingSpeed ?? '',
-      executive_control: session.domainScores?.executiveControl ?? '',
-      working_memory: session.domainScores?.workingMemory ?? '',
-      memory: session.domainScores?.memory ?? '',
-    }));
+    const rows = sessions.map((session) => {
+      const r = session.assessmentResults ?? {};
+      const trailATime = r.trailA?.completionTimeMs;
+      const trailBTime = r.trailB?.completionTimeMs;
+      const baRatio = trailATime && trailBTime ? Number((trailBTime / trailATime).toFixed(2)) : '';
+      return {
+        patient_code: patient.patientCode,
+        study_id: patient.studyId ?? '',
+        is_deidentified: patient.isDeidentified ? 'true' : 'false',
+        age_at_baseline: patient.ageAtBaseline,
+        education_years: patient.educationYears,
+        sex: patient.sex ?? '',
+        session_number: session.sessionNumber,
+        protocol_id: session.protocolId,
+        started_at: session.startedAt,
+        completed_at: session.completedAt ?? '',
+        status: session.status,
+        overall: session.summary?.overall ?? '',
+        // Domain composites
+        orientation_language: session.domainScores?.orientationLanguage ?? '',
+        processing_speed: session.domainScores?.processingSpeed ?? '',
+        executive_control: session.domainScores?.executiveControl ?? '',
+        working_memory: session.domainScores?.workingMemory ?? '',
+        memory: session.domainScores?.memory ?? '',
+        // Stroop detail
+        stroop_interference_ms: r.stroop?.interferenceMs ?? '',
+        stroop_accuracy: r.stroop?.accuracy ?? '',
+        stroop_mean_rt_ms: r.stroop?.meanRtMs ?? '',
+        stroop_percentile: r.stroop?.percentile ?? '',
+        // SDMT detail
+        symbol_throughput: r.symbolMatch?.throughput ?? '',
+        symbol_cv_rt: r.symbolMatch?.cvRt ?? '',
+        symbol_errors: r.symbolMatch?.errors ?? '',
+        symbol_percentile: r.symbolMatch?.percentile ?? '',
+        // Trail Making
+        trail_a_time_ms: trailATime ?? '',
+        trail_a_errors: r.trailA?.errors ?? '',
+        trail_a_percentile: r.trailA?.percentile ?? '',
+        trail_b_time_ms: trailBTime ?? '',
+        trail_b_errors: r.trailB?.errors ?? '',
+        trail_b_percentile: r.trailB?.percentile ?? '',
+        trail_ba_ratio: baRatio,
+        // Span
+        span_forward: r.spanForward?.maxSpan ?? '',
+        span_forward_percentile: r.spanForward?.percentile ?? '',
+        span_backward: r.spanBackward?.maxSpan ?? '',
+        span_backward_percentile: r.spanBackward?.percentile ?? '',
+        // Verbal learning
+        verbal_learning_total: r.verbalLearning?.learningTotal ?? '',
+        verbal_delayed_recall: r.verbalLearning?.delayedRecall ?? '',
+        verbal_recognition_hits: r.verbalLearning?.recognitionHits ?? '',
+        verbal_intrusions: r.verbalLearning?.intrusions ?? '',
+        verbal_retention_rate: r.verbalLearning?.retentionRate ?? '',
+        verbal_percentile: r.verbalLearning?.percentile ?? '',
+        // Fluency
+        fluency_unique: r.fluency?.uniqueResponses ?? '',
+        fluency_perseverations: r.fluency?.perseverations ?? '',
+        fluency_percentile: r.fluency?.percentile ?? '',
+        // Orientation
+        orientation_score: r.orientation?.score ?? '',
+        orientation_percentile: r.orientation?.percentile ?? '',
+      };
+    });
 
     if (!rows.length) return '';
     const headers = Object.keys(rows[0]);
